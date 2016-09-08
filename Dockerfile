@@ -1,27 +1,60 @@
-FROM ubuntu:14.04
+FROM alpine:latest
 MAINTAINER Erik Deijl <erik.deijl@gmail.com>
 
-RUN apt-get update && apt-get upgrade -y && apt-get autoremove -y --purge
-RUN apt-get install -y make curl git zip libsqlite3-dev sqlite3 1> /dev/null 2> /dev/null
+RUN apk update && apk upgrade
+RUN apk add make curl git zip sqlite-libs sqlite
 
-# Get GO
-RUN curl -O https://storage.googleapis.com/golang/go1.7.linux-amd64.tar.gz
-RUN tar -C /usr/local -zxf go1.7.linux-amd64.tar.gz
+# install Go
+RUN apk add --no-cache ca-certificates
 
-ENV PATH=$PATH:/usr/local/go/bin
-ENV GOPATH=/gopath
-ENV PATH=$PATH:$GOPATH/bin
-RUN mkdir /gopath
+ENV GOLANG_VERSION 1.7.1
+ENV GOLANG_SRC_URL https://golang.org/dl/go$GOLANG_VERSION.src.tar.gz
+ENV GOLANG_SRC_SHA256 2b843f133b81b7995f26d0cb64bbdbb9d0704b90c44df45f844d28881ad442d3
 
+# https://golang.org/issue/14851
+COPY no-pic.patch /
+
+RUN set -ex \
+	&& apk add --no-cache --virtual .build-deps \
+		bash \
+		gcc \
+		musl-dev \
+		openssl \
+		go \
+	\
+	&& export GOROOT_BOOTSTRAP="$(go env GOROOT)" \
+	\
+	&& wget -q "$GOLANG_SRC_URL" -O golang.tar.gz \
+	&& echo "$GOLANG_SRC_SHA256  golang.tar.gz" | sha256sum -c - \
+	&& tar -C /usr/local -xzf golang.tar.gz \
+	&& rm golang.tar.gz \
+	&& cd /usr/local/go/src \
+	&& patch -p2 -i /no-pic.patch \
+	&& ./make.bash \
+	\
+	&& rm -rf /*.patch
+
+ENV GOPATH /go
+ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
+
+RUN mkdir -p "$GOPATH/src" "$GOPATH/bin" && chmod -R 777 "$GOPATH"
+WORKDIR $GOPATH
+
+COPY go-wrapper /usr/local/bin/
+
+# install Drone
 RUN git clone https://github.com/drone/drone $GOPATH/src/github.com/drone/drone
-WORKDIR /gopath/src/github.com/drone/drone
+WORKDIR $GOPATH/src/github.com/drone/drone
 
 RUN make deps
 RUN make gen
 RUN make build
 
-EXPOSE 8000
+RUN apk del .build-deps
+
+EXPOSE 80
+ENV DRONE_SERVER_PORT=:80
 ENV DRONE_DATABASE_DATASOURCE=/var/lib/drone/drone.sqlite
 ENV DRONE_DATABASE_DRIVER=sqlite3
 VOLUME ["/var/lib/drone"]
-ENTRYPOINT ["/gopath/bin/drone", "server"]
+ENTRYPOINT ["/go/bin/drone", "server"]
